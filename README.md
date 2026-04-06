@@ -45,3 +45,93 @@ En cuanto a la memoria, el ESP32 cuenta con recursos limitados tanto en RAM (~52
 Respecto al almacenamiento, en esta propuesta se plantea el uso de servicios en la nube de AWS, como almacenamiento en S3, lo que permite guardar registros de video o imágenes de manera escalable. Sin embargo, esto introduce la necesidad de gestionar correctamente los costos y definir políticas de retención de datos, como la eliminación automática después de cierto tiempo.
 
 Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para un prototipo funcional, existe la posibilidad de que su rendimiento no sea suficiente para cumplir con todos los requerimientos del sistema. En ese caso, se considerará la migración a una plataforma con mayor capacidad de procesamiento, como una Raspberry Pi, la cual permitiría implementar procesamiento de video en tiempo real y modelos de inteligencia artificial más avanzados.
+
+## 5. Cronograma Tentativo
+
+> Sprints de 1 semana · Releases cada 2 semanas · ⚠️ = Spike · 🔒 = Feature Freeze
+
+### Leyenda
+| Etiqueta | Descripción |
+|---|---|
+| `must-have` | Estrictamente necesario para que el proyecto funcione |
+| `nice-to-have` | Mejora opcional |
+| `spike` | Tarea de investigación sobre la mayor incertidumbre técnica |
+| `retro` | Retrospectiva con el profesor |
+| `freeze` | Congelación de nuevas funcionalidades |
+
+---
+
+## Release 1 — Fundamentos y Viabilidad *(Semanas 1 y 2)*
+
+### Sprint 1 — Definición *(Semana 1)*
+| Tarea | Tipo |
+|---|---|
+| Crear repositorio GitHub con README.md inicial (visión, edge vs cloud, presupuesto, restricciones de hardware) | `must-have` |
+| Definir backlog priorizado en GitHub Projects con etiquetas must-have / nice-to-have | `must-have` |
+| Incluir diagrama de bloques: Cámara → ESP32 (detección + blur) → AWS S3 / Dashboard | `must-have` |
+| Identificar y documentar el spike arquitectónico: viabilidad de modelo facial TinyML en ESP32 | `must-have` |
+| Publicar cronograma tentativo en el repositorio | `must-have` |
+
+### Sprint 2 — El Spike ⚠️ *(Semana 2)*
+| Tarea | Tipo |
+|---|---|
+| Spike: probar modelo de detección facial liviano (Edge Impulse FOMO) en ESP32 o Raspberry Pi | `spike` |
+| Spike: medir FPS real y latencia de inferencia — decidir ESP32 vs migración a Raspberry Pi | `spike` |
+| Documentar hallazgos del spike: qué funciona, qué no, decisión de hardware final | `must-have` |
+| Retrospectiva Release 1 con el profesor + entrega del reporte del Spike | `retro` |
+
+---
+
+## Release 2 — MVP: Detección y Blur en Edge *(Semanas 3 y 4)*
+
+### Sprint 3 *(Semana 3)*
+| Tarea | Tipo |
+|---|---|
+| Configurar captura de imágenes periódica desde el dispositivo edge (cada ~2 s) | `must-have` |
+| Integrar modelo de detección facial en el dispositivo (TinyML / Edge Impulse) | `must-have` |
+| Implementar función de blur/pixelado sobre los bounding boxes detectados | `must-have` |
+
+### Sprint 4 *(Semana 4)*
+| Tarea | Tipo |
+|---|---|
+| Registrar al menos 1 rostro de "habitante del hogar" en el dispositivo | `must-have` |
+| Lógica de anonimización selectiva: blur solo a desconocidos, sin blur a registrados | `must-have` |
+| Pruebas de precisión: tasa de falsos positivos/negativos con distintos usuarios | `nice-to-have` |
+| Retrospectiva Release 2 + ajuste del backlog | `retro` |
+
+---
+
+## Release 3 — Integración con Nube y Visualización *(Semanas 5 y 6)*
+
+### Sprint 5 *(Semana 5)*
+| Tarea | Tipo |
+|---|---|
+| Enviar imágenes ya censuradas a AWS S3 (Free Tier) vía Wi-Fi desde el dispositivo | `must-have` |
+| Configurar pipeline en AWS (S3 + Lambda o EC2) para almacenar y servir imágenes | `must-have` |
+| Política de retención automática: eliminar imágenes de S3 después de N días | `nice-to-have` |
+
+### Sprint 6 *(Semana 6)*
+| Tarea | Tipo |
+|---|---|
+| Dashboard básico (web o app) que muestre el feed de imágenes censuradas en tiempo casi-real | `must-have` |
+| Alertas o notificaciones cuando se detecta un rostro desconocido | `nice-to-have` |
+| UI para registrar nuevos rostros remotamente desde el dashboard | `nice-to-have` |
+| Retrospectiva Release 3 + ajuste final de backlog antes del freeze | `retro` |
+
+---
+
+## Release 4 — Pulido y Entrega Final *(Semanas 7, 8 y Finales)*
+
+### Sprint 7 — Feature Freeze 🔒 *(Semana 7)*
+| Tarea | Tipo |
+|---|---|
+| Feature freeze: no nuevas funcionalidades a partir de este punto | `freeze` |
+| Corrección de bugs críticos y estabilización del sistema end-to-end | `must-have` |
+| Actualizar README con arquitectura final, decisiones tomadas y resultados del spike | `must-have` |
+
+### Sprint 8 — Entrega Final *(Semana 8 + Finales)*
+| Tarea | Tipo |
+|---|---|
+| Preparar demo funcional para la presentación (pitch) del proyecto | `must-have` |
+| Cerrar y documentar todas las tareas del backlog (estado final en GitHub Projects) | `must-have` |
+| Entrega final del repositorio con código, documentación y video/demo | `must-have` |
