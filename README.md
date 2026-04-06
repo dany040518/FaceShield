@@ -101,19 +101,19 @@ Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para 
 
 ---
 
-## Release 3 — Backend, Nube y Dashboard *(Semanas 5 y 6)*
+## Release 3 — Backend, Almacenamiento y Dashboard *(Semanas 5 y 6)*
 
 ### Sprint 5 *(Semana 5)*
 | Tarea | Tipo |
 |---|---|
 | Enviar imágenes censuradas desde la ESP32 al backend vía HTTP/MQTT | `must-have` |
 | Desarrollar API REST: recibir imágenes, consultar listado, acceder a imagen específica | `must-have` |
-| Configurar almacenamiento de imágenes (bucket en nube o servidor local) | `must-have` |
+| Configurar sistema de almacenamiento de archivos (servidor local o bucket en nube) para guardar imágenes procesadas | `must-have` |
 
 ### Sprint 6 *(Semana 6)*
 | Tarea | Tipo |
 |---|---|
-| Configurar base de datos para metadata: fecha/hora, ID de imagen, URL de referencia | `must-have` |
+| Configurar base de datos para metadata: ID de imagen, fecha/hora, ID de dispositivo, ubicación (opcional) y URL de referencia al archivo | `must-have` |
 | Desarrollar dashboard web básico: listado de imágenes, visualización individual y fecha/hora | `must-have` |
 | Dashboard local con opción de ver imágenes sin censura (alternar censurada/original) | `nice-to-have` |
 | Retrospectiva Release 3 + ajuste final de backlog antes del freeze | `retro` |
