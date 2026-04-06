@@ -70,7 +70,7 @@ El dashboard web consume la API REST para consultar la información almacenada y
 Adicionalmente, como funcionalidad opcional (nice-to-have), se propone un dashboard local que permite acceder a las imágenes sin censura dentro de la red local, brindando al usuario mayor control sobre su privacidad.
 
 
-## 4. Cronograma
+## 4. Link al Cronograma
 
 [Cronograma](cronograma.md)
 
