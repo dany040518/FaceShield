@@ -48,7 +48,26 @@ Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para 
 
 ## 5. Diagrama de bloques / Arquitectura propuesta
 
-![]
+![Arquitectura](/archivos/ArquitecturaEnBloques.png)
+
+El sistema se organiza en una arquitectura distribuida compuesta por tres bloques principales: fuente de datos, dispositivo edge y backend en la nube, además de una capa de visualización.
+
+En el bloque de datos, la cámara de seguridad actúa como un sensor que genera imágenes crudas del entorno. Esta no realiza procesamiento, sino que provee la información al dispositivo edge.
+
+El dispositivo edge (ESP32) es el encargado de controlar la captura de imágenes y ejecutar el procesamiento local. En este nivel se realiza la detección de rostros y su posterior censura, garantizando que los datos sensibles sean anonimizados antes de salir del dispositivo. Este enfoque sigue el paradigma de edge computing, reduciendo riesgos de privacidad y exposición de información biométrica.
+
+Una vez procesadas, las imágenes son enviadas mediante protocolos HTTP/HTTPS o MQTT al backend en la nube, donde se gestionan a través de una API REST. Esta API actúa como intermediaria entre el dispositivo y los sistemas de almacenamiento.
+
+Dentro del backend se separan claramente dos componentes de persistencia:
+
+Una base de datos, encargada de almacenar la metadata de cada imagen (como fecha, identificador y URL).
+Un sistema de almacenamiento de archivos (storage), donde se guardan las imágenes censuradas.
+
+Esta separación permite mejorar la escalabilidad, el rendimiento y el mantenimiento del sistema, siguiendo buenas prácticas de arquitectura.
+
+El dashboard web consume la API REST para consultar la información almacenada y visualizar las imágenes, permitiendo al usuario acceder al histórico de capturas.
+
+Adicionalmente, como funcionalidad opcional (nice-to-have), se propone un dashboard local que permite acceder a las imágenes sin censura dentro de la red local, brindando al usuario mayor control sobre su privacidad.
 
 
 
