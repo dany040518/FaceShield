@@ -72,6 +72,6 @@ Adicionalmente, como funcionalidad opcional (nice-to-have), se propone un dashbo
 
 ## 4. Cronograma
 
-(cronograma.md)
+[Cronograma](cronograma.md)
 
 
