@@ -46,6 +46,10 @@ Respecto al almacenamiento, en esta propuesta se plantea el uso de servicios en 
 
 Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para un prototipo funcional, existe la posibilidad de que su rendimiento no sea suficiente para cumplir con todos los requerimientos del sistema. En ese caso, se considerará la migración a una plataforma con mayor capacidad de procesamiento, como una Raspberry Pi, la cual permitiría implementar procesamiento de video en tiempo real y modelos de inteligencia artificial más avanzados.
 
+## 5. Diagrama de bloques / Arquitectura propuesta
+
+![]
+
 
 
 
