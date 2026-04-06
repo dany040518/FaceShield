@@ -68,54 +68,54 @@ Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para 
 |---|---|
 | Crear repositorio GitHub con README.md inicial (visión, edge vs cloud, presupuesto, restricciones de hardware) | `must-have` |
 | Definir backlog priorizado en GitHub Projects con etiquetas must-have / nice-to-have | `must-have` |
-| Incluir diagrama de bloques: Cámara → ESP32 (detección + blur) → AWS S3 / Dashboard | `must-have` |
+| Incluir diagrama de bloques: Cámara → ESP32 (detección + blur) → API REST → Storage → Dashboard | `must-have` |
 | Identificar y documentar el spike arquitectónico: viabilidad de modelo facial TinyML en ESP32 | `must-have` |
 | Publicar cronograma tentativo en el repositorio | `must-have` |
 
 ### Sprint 2 — El Spike ⚠️ *(Semana 2)*
 | Tarea | Tipo |
 |---|---|
-| Spike: probar modelo de detección facial liviano (Edge Impulse FOMO) en ESP32 o Raspberry Pi | `spike` |
+| Spike: probar modelo de detección facial liviano (Edge Impulse FOMO) en ESP32-CAM | `spike` |
 | Spike: medir FPS real y latencia de inferencia — decidir ESP32 vs migración a Raspberry Pi | `spike` |
 | Documentar hallazgos del spike: qué funciona, qué no, decisión de hardware final | `must-have` |
 | Retrospectiva Release 1 con el profesor + entrega del reporte del Spike | `retro` |
 
 ---
 
-## Release 2 — MVP: Detección y Blur en Edge *(Semanas 3 y 4)*
+## Release 2 — MVP Edge: Captura, Detección y Censura *(Semanas 3 y 4)*
 
 ### Sprint 3 *(Semana 3)*
 | Tarea | Tipo |
 |---|---|
-| Configurar captura de imágenes periódica desde el dispositivo edge (cada ~2 s) | `must-have` |
-| Integrar modelo de detección facial en el dispositivo (TinyML / Edge Impulse) | `must-have` |
-| Implementar función de blur/pixelado sobre los bounding boxes detectados | `must-have` |
+| Configurar captura periódica de imágenes desde ESP32-CAM (cada 5–10 s) con manejo de fallos de hardware | `must-have` |
+| Integrar modelo ligero de detección facial en el dispositivo (TinyML / Edge Impulse) | `must-have` |
+| Implementar conectividad WiFi en la ESP32 con reconexión automática ante pérdida de señal | `must-have` |
 
 ### Sprint 4 *(Semana 4)*
 | Tarea | Tipo |
 |---|---|
-| Registrar al menos 1 rostro de "habitante del hogar" en el dispositivo | `must-have` |
-| Lógica de anonimización selectiva: blur solo a desconocidos, sin blur a registrados | `must-have` |
-| Pruebas de precisión: tasa de falsos positivos/negativos con distintos usuarios | `nice-to-have` |
+| Implementar censura de rostros detectados (blur, pixelado o máscara) sobre la imagen | `must-have` |
+| Desarrollar capa de abstracción de procesamiento de imágenes (funciones: detectar, censurar, procesar) | `must-have` |
+| Implementar manejo básico de errores: fallos en captura, conexión WiFi y envío de datos | `must-have` |
 | Retrospectiva Release 2 + ajuste del backlog | `retro` |
 
 ---
 
-## Release 3 — Integración con Nube y Visualización *(Semanas 5 y 6)*
+## Release 3 — Backend, Nube y Dashboard *(Semanas 5 y 6)*
 
 ### Sprint 5 *(Semana 5)*
 | Tarea | Tipo |
 |---|---|
-| Enviar imágenes ya censuradas a AWS S3 (Free Tier) vía Wi-Fi desde el dispositivo | `must-have` |
-| Configurar pipeline en AWS (S3 + Lambda o EC2) para almacenar y servir imágenes | `must-have` |
-| Política de retención automática: eliminar imágenes de S3 después de N días | `nice-to-have` |
+| Enviar imágenes censuradas desde la ESP32 al backend vía HTTP/MQTT | `must-have` |
+| Desarrollar API REST: recibir imágenes, consultar listado, acceder a imagen específica | `must-have` |
+| Configurar almacenamiento de imágenes (bucket en nube o servidor local) | `must-have` |
 
 ### Sprint 6 *(Semana 6)*
 | Tarea | Tipo |
 |---|---|
-| Dashboard básico (web o app) que muestre el feed de imágenes censuradas en tiempo casi-real | `must-have` |
-| Alertas o notificaciones cuando se detecta un rostro desconocido | `nice-to-have` |
-| UI para registrar nuevos rostros remotamente desde el dashboard | `nice-to-have` |
+| Configurar base de datos para metadata: fecha/hora, ID de imagen, URL de referencia | `must-have` |
+| Desarrollar dashboard web básico: listado de imágenes, visualización individual y fecha/hora | `must-have` |
+| Dashboard local con opción de ver imágenes sin censura (alternar censurada/original) | `nice-to-have` |
 | Retrospectiva Release 3 + ajuste final de backlog antes del freeze | `retro` |
 
 ---
@@ -127,6 +127,9 @@ Finalmente, es importante tener en cuenta que, aunque el ESP32 es adecuado para 
 |---|---|
 | Feature freeze: no nuevas funcionalidades a partir de este punto | `freeze` |
 | Corrección de bugs críticos y estabilización del sistema end-to-end | `must-have` |
+| Control de acceso y autenticación de usuarios en el dashboard | `nice-to-have` |
+| Configuración remota del dispositivo desde el dashboard (frecuencia, tipo de censura, calidad) | `nice-to-have` |
+| Procesamiento de video en tiempo real / streaming (si el hardware lo permite) | `nice-to-have` |
 | Actualizar README con arquitectura final, decisiones tomadas y resultados del spike | `must-have` |
 
 ### Sprint 8 — Entrega Final *(Semana 8 + Finales)*
