@@ -195,11 +195,11 @@ El frame modificado se muestra en tiempo real con `cv2.imshow()`, incluyendo un 
 
 ## Resultados / Conclusiones
 
-- ✅ El script funciona correctamente en condiciones controladas, detectando y censurando rostros frontales en tiempo real sin latencia perceptible.
-- ✅ El consumo de recursos es bajo — el algoritmo Haar Cascade no requiere GPU y opera eficientemente sobre CPU, lo que lo hace viable para hardware embebido como Raspberry Pi 5.
-- ✅ La implementación es simple y no requiere dependencias externas más allá de OpenCV, facilitando su despliegue en distintos entornos.
-- ✅ Se valida la viabilidad del pipeline base: **captura → preprocesamiento → detección → censura → visualización**, reutilizable con modelos más robustos.
-- ⚠️ El algoritmo no es suficiente para un sistema de censura confiable en condiciones no controladas debido a sus limitaciones de pose e iluminación descritas a continuación.
+- El script funciona correctamente en condiciones controladas, detectando y censurando rostros frontales en tiempo real sin latencia perceptible.
+- El consumo de recursos es bajo — el algoritmo Haar Cascade no requiere GPU y opera eficientemente sobre CPU, lo que lo hace viable para hardware embebido como Raspberry Pi 5.
+- La implementación es simple y no requiere dependencias externas más allá de OpenCV, facilitando su despliegue en distintos entornos.
+- Se valida la viabilidad del pipeline base: **captura → preprocesamiento → detección → censura → visualización**, reutilizable con modelos más robustos.
+- El algoritmo no es suficiente para un sistema de censura confiable en condiciones no controladas debido a sus limitaciones de pose e iluminación descritas a continuación.
 
 ---
 
