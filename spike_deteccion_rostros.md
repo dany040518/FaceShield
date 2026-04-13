@@ -218,4 +218,87 @@ Estas limitaciones motivaron la evaluación de un modelo alternativo basado en r
 
 ---
 
-*Spike elaborado como parte del proceso de investigación técnica del proyecto IoT.*
+## Transición a un modelo basado en Deep Learning — MediaPipe BlazeFace
+
+Dadas las limitaciones identificadas en el algoritmo Haar Cascade, se procedió a evaluar una alternativa basada en redes neuronales ligeras optimizadas para ejecución en tiempo real en dispositivos embebidos: **MediaPipe** con el modelo **BlazeFace**.
+
+---
+
+## Motivación del cambio de modelo
+
+El cambio hacia BlazeFace no responde únicamente a una mejora incremental, sino a una **necesidad funcional del sistema**, especialmente en un contexto IoT donde la privacidad debe garantizarse en condiciones reales y no controladas.
+
+Las razones principales son:
+
+---
+
+### 1. Robustez ante variaciones de pose
+
+A diferencia de Haar Cascade, que depende fuertemente de rostros frontales, BlazeFace permite detectar:
+
+- Rostros parcialmente rotados  
+- Inclinaciones laterales  
+- Variaciones naturales de postura  
+
+Esto elimina una de las principales brechas del sistema.
+
+---
+
+### 2. Mayor tolerancia a condiciones de iluminación
+
+Permite:
+
+- Detección en baja luz  
+- Manejo de sombras y contraluces  
+- Estabilidad en entornos dinámicos  
+
+---
+
+### 3. Optimización para dispositivos edge
+
+Modelo utilizado:
+
+
+blaze_face_short_range.tflite
+
+
+Características:
+
+- Baja latencia  
+- Uso eficiente de CPU  
+- Compatible con Raspberry Pi  
+
+---
+
+### 4. Integración moderna
+
+Uso de:
+
+python
+vision.FaceDetectorOptions(...)
+
+Ventajas:
+
+      Modularidad
+      Escalabilidad
+      Facilidad de configuración
+
+### 5. Medición de desempeño
+
+Incluye métricas en tiempo real:
+
+      FPS
+      CPU
+      RAM
+      Número de rostros
+
+### Conclusión de la transición
+
+| Enfoque        | Haar Cascade | BlazeFace     |
+| -------------- | ------------ | ------------- |
+| Tipo de modelo | Clásico      | Deep Learning |
+| Robustez       | Baja         | Alta          |
+| Precisión      | Limitada     | Superior      |
+| Complejidad    | Baja         | Media         |
+| Viabilidad IoT | Parcial      | Alta          |
+
