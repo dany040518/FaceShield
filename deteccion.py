@@ -1,0 +1,505 @@
+import cv2
+import numpy as np
+from flask import Flask, Response, render_template_string, request, jsonify
+import os
+import threading
+import socket
+import psutil
+import urllib.request
+
+# ─────────────────────────────────────────────
+#  DESCARGA DEL MODELO DNN (solo la primera vez)
+# ─────────────────────────────────────────────
+PROTOTXT  = "deploy.prototxt"
+CAFFEMODEL = "res10_300x300_ssd_iter_140000.caffemodel"
+
+if not os.path.exists(PROTOTXT):
+    print("Descargando deploy.prototxt...")
+    urllib.request.urlretrieve(
+        "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
+        PROTOTXT
+    )
+
+if not os.path.exists(CAFFEMODEL):
+    print("Descargando modelo caffemodel (~10 MB)...")
+    urllib.request.urlretrieve(
+        "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
+        CAFFEMODEL
+    )
+
+print("Cargando red neuronal DNN...")
+net = cv2.dnn.readNetFromCaffe(PROTOTXT, CAFFEMODEL)
+print("✅ Modelo DNN cargado correctamente")
+
+# ─────────────────────────────────────────────
+#  FLASK Y ESTADO GLOBAL
+# ─────────────────────────────────────────────
+app   = Flask(__name__)
+lock  = threading.Lock()
+
+frame_actual      = None
+coordenadas_caras = []
+caras_visibles    = set()
+
+# ─────────────────────────────────────────────
+#  DASHBOARD HTML
+# ─────────────────────────────────────────────
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Detection — DNN</title>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --green:  #00ff88;
+            --red:    #ff3a3a;
+            --bg:     #080c10;
+            --panel:  #0d1117;
+            --border: #1a2332;
+            --text:   #c9d6e3;
+            --dim:    #4a5568;
+        }
+
+        * { margin:0; padding:0; box-sizing:border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Exo 2', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 24px 16px;
+            gap: 20px;
+        }
+
+        /* scanline overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0,255,136,0.015) 2px,
+                rgba(0,255,136,0.015) 4px
+            );
+            pointer-events: none;
+            z-index: 999;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            width: 100%;
+            max-width: 700px;
+        }
+
+        .logo {
+            width: 38px; height: 38px;
+            border: 2px solid var(--green);
+            border-radius: 6px;
+            display: grid;
+            place-items: center;
+            font-size: 1.2rem;
+            box-shadow: 0 0 12px rgba(0,255,136,0.3);
+        }
+
+        h1 {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 1rem;
+            letter-spacing: 3px;
+            color: var(--green);
+            text-transform: uppercase;
+        }
+
+        .badge {
+            margin-left: auto;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 0.7rem;
+            padding: 4px 10px;
+            border: 1px solid var(--green);
+            border-radius: 20px;
+            color: var(--green);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dot {
+            width: 7px; height: 7px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: blink 1.4s infinite;
+        }
+
+        @keyframes blink {
+            0%,100% { opacity:1; } 50% { opacity:0.1; }
+        }
+
+        /* VIDEO */
+        .video-wrap {
+            position: relative;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow:
+                0 0 0 1px rgba(0,255,136,0.08),
+                0 0 40px rgba(0,0,0,0.8);
+            cursor: crosshair;
+            width: 100%;
+            max-width: 700px;
+        }
+
+        /* corner decorations */
+        .video-wrap::before,
+        .video-wrap::after {
+            content: '';
+            position: absolute;
+            width: 18px; height: 18px;
+            border-color: var(--green);
+            border-style: solid;
+            z-index: 10;
+        }
+        .video-wrap::before { top:8px; left:8px; border-width:2px 0 0 2px; }
+        .video-wrap::after  { bottom:8px; right:8px; border-width:0 2px 2px 0; }
+
+        #stream {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        #overlay {
+            position: absolute;
+            top:0; left:0;
+            width:100%; height:100%;
+            pointer-events: none;
+        }
+
+        /* STATS */
+        .stats {
+            display: flex;
+            gap: 12px;
+            width: 100%;
+            max-width: 700px;
+        }
+
+        .stat-card {
+            flex: 1;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .stat-label {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 0.65rem;
+            color: var(--dim);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 1.4rem;
+            color: var(--green);
+        }
+
+        .hint {
+            font-size: 0.75rem;
+            color: var(--dim);
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="logo">📷</div>
+    <h1>Face Detection · DNN</h1>
+    <div class="badge">
+        <span class="dot"></span>
+        LIVE
+    </div>
+</header>
+
+<div class="video-wrap" id="wrapper">
+    <img id="stream" src="/video" alt="stream">
+    <canvas id="overlay"></canvas>
+</div>
+
+<div class="stats">
+    <div class="stat-card">
+        <span class="stat-label">Caras detectadas</span>
+        <span class="stat-value" id="cnt">0</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Censuradas</span>
+        <span class="stat-value" id="cen" style="color:#ff3a3a">0</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Motor</span>
+        <span class="stat-value" style="font-size:0.85rem;margin-top:4px">OpenCV DNN<br><small style="color:var(--dim);font-size:0.7rem">SSD ResNet-10</small></span>
+    </div>
+</div>
+
+<p class="hint">▸ Haz click sobre una cara para activar / quitar la censura</p>
+
+<script>
+    const stream  = document.getElementById("stream");
+    const canvas  = document.getElementById("overlay");
+    const ctx     = canvas.getContext("2d");
+    const cntEl   = document.getElementById("cnt");
+    const cenEl   = document.getElementById("cen");
+    let caras     = [];
+
+    function syncCanvas() {
+        canvas.width  = stream.clientWidth;
+        canvas.height = stream.clientHeight;
+    }
+    stream.addEventListener("load", syncCanvas);
+    window.addEventListener("resize", syncCanvas);
+    syncCanvas();
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (!caras.length) return;
+
+        const sx = canvas.width  / 640;
+        const sy = canvas.height / 480;
+
+        caras.forEach((c, i) => {
+            const x = c.x  * sx;
+            const y = c.y  * sy;
+            const w = (c.x2 - c.x) * sx;
+            const h = (c.y2 - c.y) * sy;
+
+            const color = c.visible ? "#00ff88" : "#ff3a3a";
+
+            // rectángulo principal
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 1.5;
+            ctx.strokeRect(x, y, w, h);
+
+            // esquinas destacadas
+            const cs = 10;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            // top-left
+            ctx.moveTo(x, y+cs); ctx.lineTo(x,y); ctx.lineTo(x+cs,y);
+            // top-right
+            ctx.moveTo(x+w-cs,y); ctx.lineTo(x+w,y); ctx.lineTo(x+w,y+cs);
+            // bottom-left
+            ctx.moveTo(x,y+h-cs); ctx.lineTo(x,y+h); ctx.lineTo(x+cs,y+h);
+            // bottom-right
+            ctx.moveTo(x+w-cs,y+h); ctx.lineTo(x+w,y+h); ctx.lineTo(x+w,y+h-cs);
+            ctx.stroke();
+
+            // etiqueta
+            ctx.font      = "10px 'Share Tech Mono', monospace";
+            ctx.fillStyle = color;
+            const label = c.visible ? `FACE_${String(i).padStart(2,"0")}` : `CENSORED`;
+            ctx.fillText(label, x + 4, y - 5);
+
+            // confianza
+            if (c.conf !== undefined) {
+                ctx.fillStyle = "rgba(0,255,136,0.6)";
+                ctx.font      = "9px 'Share Tech Mono', monospace";
+                ctx.fillText(`${Math.round(c.conf * 100)}%`, x + 4, y + h - 5);
+            }
+        });
+    }
+
+    async function poll() {
+        try {
+            const res = await fetch("/caras");
+            caras = await res.json();
+            draw();
+            cntEl.textContent = caras.length;
+            cenEl.textContent = caras.filter(c => !c.visible).length;
+        } catch {}
+    }
+    setInterval(poll, 250);
+
+    // click en el wrapper (no en canvas, para mayor área)
+    document.getElementById("wrapper").addEventListener("click", async (e) => {
+        const rect = stream.getBoundingClientRect();
+        const mx   = (e.clientX - rect.left) * (640 / rect.width);
+        const my   = (e.clientY - rect.top)  * (480 / rect.height);
+
+        await fetch("/click", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ x: mx, y: my })
+        });
+    });
+</script>
+</body>
+</html>
+"""
+
+# ─────────────────────────────────────────────
+#  HILO DE CAPTURA Y DETECCIÓN DNN
+# ─────────────────────────────────────────────
+def capturar_y_procesar():
+    global frame_actual, coordenadas_caras, caras_visibles
+
+    cap = cv2.VideoCapture(0)          # 0 = cámara integrada / CSI; 1 = USB externa
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # reduce lag
+
+    proceso  = psutil.Process(os.getpid())
+    contador = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        h_f, w_f = frame.shape[:2]
+
+        # ── Detección DNN ──────────────────────────────────────────────
+        blob = cv2.dnn.blobFromImage(
+            cv2.resize(frame, (300, 300)),
+            scalefactor=1.0,
+            size=(300, 300),
+            mean=(104.0, 177.0, 123.0)
+        )
+        net.setInput(blob)
+        detections = net.forward()
+
+        nuevas_coords   = []
+        nuevas_confs    = []
+
+        for i in range(detections.shape[2]):
+            conf = float(detections[0, 0, i, 2])
+            if conf < 0.55:          # umbral de confianza
+                continue
+            box = detections[0, 0, i, 3:7] * np.array([w_f, h_f, w_f, h_f])
+            x, y, x2, y2 = box.astype(int)
+            # clamp a los límites del frame
+            x  = max(0, x);  y  = max(0, y)
+            x2 = min(w_f, x2); y2 = min(h_f, y2)
+            if x2 > x and y2 > y:
+                nuevas_coords.append((x, y, x2, y2))
+                nuevas_confs.append(round(conf, 2))
+
+        with lock:
+            coordenadas_caras = list(zip(nuevas_coords, nuevas_confs))
+            caras_visibles.intersection_update(range(len(nuevas_coords)))
+
+        # ── Pixelado / censura ────────────────────────────────────────
+        for i, ((x, y, x2, y2), _) in enumerate(zip(nuevas_coords, nuevas_confs)):
+            cara = frame[y:y2, x:x2]
+            if cara.size == 0:
+                continue
+            if i not in caras_visibles:
+                cara_p = cv2.resize(cara, (6, 6), interpolation=cv2.INTER_LINEAR)
+                cara_p = cv2.resize(cara_p, (x2-x, y2-y), interpolation=cv2.INTER_NEAREST)
+                frame[y:y2, x:x2] = cara_p
+
+        cv2.putText(frame, f"Caras: {len(nuevas_coords)}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 136), 2)
+
+        contador += 1
+        if contador % 60 == 0:
+            ram = proceso.memory_info().rss / 1024 / 1024
+            print(f"RAM: {ram:.1f} MB  |  Caras: {len(nuevas_coords)}")
+
+        with lock:
+            frame_actual = frame.copy()
+
+    cap.release()
+
+
+# ─────────────────────────────────────────────
+#  STREAM MJPEG
+# ─────────────────────────────────────────────
+def generar_stream():
+    while True:
+        with lock:
+            if frame_actual is None:
+                continue
+            _, buffer = cv2.imencode(".jpg", frame_actual,
+                                     [cv2.IMWRITE_JPEG_QUALITY, 80])
+            frame_bytes = buffer.tobytes()
+
+        yield (b"--frame\r\n"
+               b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+
+
+# ─────────────────────────────────────────────
+#  RUTAS FLASK
+# ─────────────────────────────────────────────
+@app.route("/")
+def dashboard():
+    return render_template_string(DASHBOARD_HTML)
+
+@app.route("/video")
+def video():
+    return Response(generar_stream(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+@app.route("/caras")
+def caras():
+    with lock:
+        datos = [
+            {
+                "x":    int(x),
+                "y":    int(y),
+                "x2":   int(x2),
+                "y2":   int(y2),
+                "conf": float(conf),
+                "visible": i in caras_visibles
+            }
+            for i, ((x, y, x2, y2), conf) in enumerate(coordenadas_caras)
+        ]
+    return jsonify(datos)
+
+@app.route("/click", methods=["POST"])
+def click():
+    data   = request.get_json()
+    mx, my = data["x"], data["y"]
+
+    with lock:
+        for i, ((x, y, x2, y2), _) in enumerate(coordenadas_caras):
+            if x <= mx <= x2 and y <= my <= y2:
+                if i in caras_visibles:
+                    caras_visibles.discard(i)
+                else:
+                    caras_visibles.add(i)
+                break
+
+    return jsonify({"ok": True})
+
+
+# ─────────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    hilo = threading.Thread(target=capturar_y_procesar, daemon=True)
+    hilo.start()
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]
+    s.close()
+
+    print("\n✅ Dashboard corriendo en:")
+    print("   → Local:     http://localhost:5000")
+    print(f"   → Red local: http://{ip}:5000")
+    print("\nHaz click sobre una cara para censurar / revelar\n")
+
+    app.run(host="0.0.0.0", port=5000, debug=False)
