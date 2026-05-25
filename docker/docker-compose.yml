@@ -1,0 +1,13 @@
+services:
+  face-detection:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: face-detection-app
+    ports:
+      - "5001:5000"
+    environment:
+      - DEFAULT_VIDEO_SOURCE=0
+    devices:
+      - /dev/video0:/dev/video0
+    restart: unless-stopped
