@@ -121,40 +121,7 @@ Esta arquitectura mantiene todo el procesamiento sensible dentro de la red local
 ## 4. Arquitectura Final Implementada
 
 ### 4.1 Diagrama de flujo
-
-```
-                          RED LOCAL
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   Fuente de video                Raspberry Pi 5 (nodo edge)    │
-│                                                                 │
-│  ┌─────────────────┐             ┌───────────────────────────┐  │
-│  │   ESP32-CAM     │  stream     │  Hilo de captura          │  │
-│  │   (MJPEG/HTTP)  │───────────► │  └─ OpenCV DNN            │  │
-│  └─────────────────┘            │     (SSD ResNet-10)       │  │
-│           o                     │  └─ Pixelado (censura)    │  │
-│  ┌─────────────────┐            │  └─ Frame dual (local/pub) │  │
-│  │   Cámara USB    │───────────► │                           │  │
-│  │   (índice 0)    │            │  Flask :5000              │  │
-│  └─────────────────┘            └──────────────┬────────────┘  │
-│                                                │               │
-│                              ┌─────────────────┴────────────┐  │
-│                              │                              │  │
-│                   Vista local (interactiva)    Vista pública │  │
-│                                                             │  │
-│              ┌──────────────────────┐   ┌────────────────┐  │  │
-│              │  /                   │   │  /public       │  │  │
-│              │  Dashboard           │   │  Solo lectura  │  │  │
-│              │  Click → toggle      │   │  Siempre       │  │  │
-│              │  censura por cara    │   │  censurado     │  │  │
-│              │                      │   │                │  │  │
-│              │  /video              │   │  /video_public │  │  │
-│              │  Stream MJPEG        │   │  Stream MJPEG  │  │  │
-│              │  censura selectiva   │   │  sin censura   │  │  │
-│              │                      │   │  removible     │  │  │
-│              └──────────────────────┘   └────────────────┘  │  │
-└─────────────────────────────────────────────────────────────────┘
-```
+<img width="546" height="1063" alt="image" src="https://github.com/user-attachments/assets/4ddece95-71de-4f04-af7e-34984ec68f2a" />
 
 ### 4.2 Componentes del sistema
 
@@ -193,25 +160,8 @@ Interfaz de solo lectura con todos los rostros permanentemente censurados. No ex
 | `/source_status` | GET | Estado actual de conexión a la fuente de video |
 
 ### 4.4 Flujo de datos y privacidad
+<img width="673" height="1244" alt="image" src="https://github.com/user-attachments/assets/7d87ad0b-1740-4b05-b400-5b213da77d08" />
 
-```
-Frame crudo (con rostros visibles)
-    │
-    ▼
-[OpenCV DNN — SSD ResNet-10]
-    │ detecta bounding boxes
-    ▼
-[Módulo de pixelado]
-    │ genera dos versiones en memoria:
-    ├─ Frame local: solo pixela caras no marcadas como visibles
-    └─ Frame público: pixela TODOS los rostros sin excepción
-    │
-    ▼
-[Codificación JPEG]
-    │
-    ▼
-Los frames originales sin censurar NUNCA se transmiten fuera del dispositivo
-```
 
 ---
 
@@ -242,7 +192,7 @@ El sistema utiliza el modelo **SSD ResNet-10** en formato Caffe (`res10_300x300_
 
 ## 6. Estado del MVP
 
-### Funcionalidades implementadas ✅
+### Funcionalidades implementadas
 
 | Funcionalidad | Descripción |
 |---|---|
@@ -258,7 +208,7 @@ El sistema utiliza el modelo **SSD ResNet-10** en formato Caffe (`res10_300x300_
 | Rate limiting | Protección básica contra abuso en el endpoint `/click` (8 clicks/segundo por IP) |
 | Contenedor Docker | Imagen reproducible con modelos incluidos, lista para despliegue en RPi |
 
-### Fuera del alcance del MVP ❌
+### Fuera del alcance del MVP
 
 | Funcionalidad | Razón de exclusión |
 |---|---|
@@ -413,10 +363,10 @@ El proyecto siguió una metodología de sprints semanales con releases cada dos 
 
 | Release | Período | Enfoque | Estado |
 |---|---|---|---|
-| Release 1 — Fundamentos y Viabilidad | Semanas 1–2 | Definición del proyecto, spike técnico, decisión de hardware | ✅ Completado |
-| Release 2 — MVP Edge: Captura, Detección y Censura | Semanas 3–4 | Implementación del pipeline de detección y censura | ✅ Completado |
-| Release 3 — Dashboard y Streaming | Semanas 5–6 | Dashboard local, vista pública, streaming MJPEG dual | ✅ Completado |
-| Release 4 — Estabilización y Entrega | Semanas 7–8 | Manejo de errores, Docker, documentación final | ✅ Completado |
+| Release 1 — Fundamentos y Viabilidad | Semanas 1–2 | Definición del proyecto, spike técnico, decisión de hardware | Completado |
+| Release 2 — MVP Edge: Captura, Detección y Censura | Semanas 3–4 | Implementación del pipeline de detección y censura | Completado |
+| Release 3 — Dashboard y Streaming | Semanas 5–6 | Dashboard local, vista pública, streaming MJPEG dual | Completado |
+| Release 4 — Estabilización y Entrega | Semanas 7–8 | Manejo de errores, Docker, documentación final | Completado |
 
 > Cronograma detallado por sprint: [cronograma.md](cronograma.md)
 
