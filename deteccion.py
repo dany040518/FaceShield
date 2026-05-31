@@ -15,7 +15,9 @@ import threading
 import socket
 import time
 import psutil
+import sys
 import urllib.request
+import urllib.error
 import subprocess
 from collections import defaultdict
 
@@ -31,24 +33,43 @@ cv2.setNumThreads(2)   # deja 2 cores libres para Flask/streaming
 PROTOTXT   = "deploy.prototxt"
 CAFFEMODEL = "res10_300x300_ssd_iter_140000.caffemodel"
 
+def _descargar_modelo(url: str, destino: str) -> None:
+    print(f"Descargando {destino}...")
+    try:
+        urllib.request.urlretrieve(url, destino)
+    except urllib.error.HTTPError as e:
+        print(f"[ERROR] No se pudo descargar {destino}: HTTP {e.code} — {url}")
+        if os.path.exists(destino):
+            os.remove(destino)  # eliminar archivo parcialmente descargado
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"[ERROR] Sin conexión de red al descargar {destino}: {e.reason}")
+        sys.exit(1)
+    except OSError as e:
+        print(f"[ERROR] No se pudo guardar {destino} en disco: {e}")
+        sys.exit(1)
+
 if not os.path.exists(PROTOTXT):
-    print("Descargando deploy.prototxt...")
-    urllib.request.urlretrieve(
+    _descargar_modelo(
         "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/"
         "face_detector/deploy.prototxt",
         PROTOTXT,
     )
 
 if not os.path.exists(CAFFEMODEL):
-    print("Descargando modelo caffemodel (~10 MB)...")
-    urllib.request.urlretrieve(
+    _descargar_modelo(
         "https://github.com/opencv/opencv_3rdparty/raw/"
         "dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
         CAFFEMODEL,
     )
 
 print("Cargando red neuronal DNN...")
-net = cv2.dnn.readNetFromCaffe(PROTOTXT, CAFFEMODEL)
+try:
+    net = cv2.dnn.readNetFromCaffe(PROTOTXT, CAFFEMODEL)
+except cv2.error as e:
+    print(f"[ERROR] No se pudo cargar el modelo DNN: {e}")
+    print("[ERROR] El archivo puede estar corrupto. Elimina .prototxt y .caffemodel y reinicia.")
+    sys.exit(1)
 print("✅ Modelo DNN cargado")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -557,14 +578,18 @@ def capturar_y_procesar() -> None:
             h_f, w_f = frame.shape[:2]
 
             # ── Detección DNN ─────────────────────────────────────────────
-            blob = cv2.dnn.blobFromImage(
-                cv2.resize(frame, (300, 300)),
-                scalefactor=1.0,
-                size=(300, 300),
-                mean=(104.0, 177.0, 123.0),
-            )
-            net.setInput(blob)
-            detections = net.forward()
+            try:
+                blob = cv2.dnn.blobFromImage(
+                    cv2.resize(frame, (300, 300)),
+                    scalefactor=1.0,
+                    size=(300, 300),
+                    mean=(104.0, 177.0, 123.0),
+                )
+                net.setInput(blob)
+                detections = net.forward()
+            except cv2.error as e:
+                print(f"[Stream] Error en inferencia DNN, frame descartado: {e}")
+                continue
 
             nuevas_coords: list[tuple[int, int, int, int]] = []
             nuevas_confs:  list[float]                      = []
@@ -603,8 +628,11 @@ def capturar_y_procesar() -> None:
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 136), 2,
             )
 
-            _, buf_pub = cv2.imencode(".jpg", f_pub, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            _, buf_loc = cv2.imencode(".jpg", f_loc, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            ok_pub, buf_pub = cv2.imencode(".jpg", f_pub, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            ok_loc, buf_loc = cv2.imencode(".jpg", f_loc, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok_pub or not ok_loc:
+                print("[Stream] Error al codificar frame JPEG, frame descartado")
+                continue
             jpg_pub = buf_pub.tobytes()
             jpg_loc = buf_loc.tobytes()
 
@@ -704,8 +732,11 @@ def click():
     if not data or "x" not in data or "y" not in data:
         return jsonify({"ok": False, "error": "bad_request"}), 400
 
-    mx = float(data["x"])
-    my = float(data["y"])
+    try:
+        mx = float(data["x"])
+        my = float(data["y"])
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_coordinates"}), 400
 
     with lock:
         for i, ((x, y, x2, y2), _) in enumerate(coordenadas_caras):
