@@ -363,10 +363,10 @@ El proyecto siguió una metodología de sprints semanales con releases cada dos 
 
 | Release | Período | Enfoque | Estado |
 |---|---|---|---|
-| Release 1 — Fundamentos y Viabilidad | Semanas 1–2 | Definición del proyecto, spike técnico, decisión de hardware | Completado |
-| Release 2 — MVP Edge: Captura, Detección y Censura | Semanas 3–4 | Implementación del pipeline de detección y censura | Completado |
-| Release 3 — Dashboard y Streaming | Semanas 5–6 | Dashboard local, vista pública, streaming MJPEG dual | Completado |
-| Release 4 — Estabilización y Entrega | Semanas 7–8 | Manejo de errores, Docker, documentación final | Completado |
+| Release 1 - Fundamentos y Viabilidad | Semanas 1–2 | Definición del proyecto, spike técnico, decisión de hardware | Completado |
+| Release 2 - MVP Edge: Captura, Detección y Censura | Semanas 3–4 | Implementación del pipeline de detección y censura | Completado |
+| Release 3 - Dashboard y Streaming | Semanas 5–6 | Dashboard local, vista pública, streaming MJPEG dual | Completado |
+| Release 4 - Estabilización y Entrega | Semanas 7–8 | Manejo de errores, Docker, documentación final | Completado |
 
 > Cronograma detallado por sprint: [cronograma.md](cronograma.md)
 
