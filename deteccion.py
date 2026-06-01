@@ -3,8 +3,8 @@
 Face Detection Stream — Modo dual
   /             → Dashboard local interactivo (click para censurar/revelar, cambio de fuente)
   /video        → MJPEG local, censura selectiva
-  /public       → Vista pública, solo lectura
-  /video_public → MJPEG siempre censurado, sin interacción posible
+  /public       → Vista pública, refleja el estado de censura del dashboard local
+  /video_public → MJPEG que refleja el estado de censura del dashboard local
 
 Fuentes soportadas:
   0, 1, 2...    → Cámaras conectadas al dispositivo (0 = integrada, 1 = USB externa, etc.)
@@ -87,8 +87,9 @@ app = Flask(__name__)
 
 lock = threading.Lock()
 
+# frame_local_jpeg  → censura selectiva según caras_visibles (dashboard + público)
+# Solo se mantiene un frame único que refleja el estado actual de censura.
 frame_local_jpeg:   bytes | None = None
-frame_publico_jpeg: bytes | None = None
 frame_id: int = 0
 
 coordenadas_caras: list[tuple[tuple[int,int,int,int], float]] = []
@@ -124,7 +125,6 @@ def _is_youtube_url(src: str) -> bool:
     return "youtube.com/watch" in src or "youtu.be/" in src
 
 def _resolver_youtube(url: str) -> str | None:
-    """Retorna la URL directa del stream o None si falla."""
     try:
         result = subprocess.check_output(
             ["yt-dlp", "-f", "best[ext=mp4]/best", "-g", url],
@@ -168,7 +168,6 @@ def _pixelar_elipse(img: np.ndarray, x: int, y: int, x2: int, y2: int,
     w = x2 - x
     h = y2 - y
 
-    # Expandir bounding box un 25% en cada lado
     pad_x = int(w * expand)
     pad_y = int(h * expand)
     x  = max(0, x  - pad_x)
@@ -181,7 +180,7 @@ def _pixelar_elipse(img: np.ndarray, x: int, y: int, x2: int, y2: int,
     if w <= 0 or h <= 0:
         return
 
-    region   = img[y:y2, x:x2].copy()
+    region = img[y:y2, x:x2].copy()
     if region.size == 0:
         return
 
@@ -245,7 +244,6 @@ DASHBOARD_HTML = """
         .dot { width:7px; height:7px; background:var(--green); border-radius:50%;
                animation:blink 1.4s infinite; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.1} }
-
         .source-panel {
             width:100%; max-width:700px; background:var(--panel);
             border:1px solid var(--border); border-radius:8px; padding:14px 16px;
@@ -289,8 +287,6 @@ DASHBOARD_HTML = """
             font-family:'Share Tech Mono',monospace; color:#5a7a8a;
             background:#0a0f14; padding:1px 5px; border-radius:3px;
         }
-
-        /* Accesos rápidos de fuente */
         .quick-sources { display:flex; gap:8px; flex-wrap:wrap; }
         .quick-btn {
             background:#0a0f14; border:1px solid var(--border); border-radius:5px;
@@ -298,7 +294,6 @@ DASHBOARD_HTML = """
             color:var(--dim); cursor:pointer; transition:border-color 0.15s,color 0.15s;
         }
         .quick-btn:hover { border-color:var(--green); color:var(--green); }
-
         .video-wrap {
             position:relative; border:1px solid var(--border); border-radius:8px;
             overflow:hidden; box-shadow:0 0 0 1px rgba(0,255,136,0.08),0 0 40px rgba(0,0,0,0.8);
@@ -312,7 +307,6 @@ DASHBOARD_HTML = """
         .video-wrap::after  { bottom:8px; right:8px; border-width:0 2px 2px 0; }
         #stream  { display:block; width:100%; height:auto; }
         #overlay { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
-
         .stats { display:flex; gap:12px; width:100%; max-width:700px; }
         .stat-card {
             flex:1; background:var(--panel); border:1px solid var(--border);
@@ -339,15 +333,12 @@ DASHBOARD_HTML = """
             spellcheck="false" autocomplete="off">
         <button id="sourceBtn" class="source-btn" onclick="setSource()">CONECTAR</button>
     </div>
-
-    <!-- Accesos rápidos -->
     <div class="quick-sources">
         <button class="quick-btn" onclick="fillSource('0')">📷 Cámara 0</button>
         <button class="quick-btn" onclick="fillSource('1')">📷 Cámara 1</button>
         <button class="quick-btn" onclick="fillSource('2')">📷 Cámara 2</button>
         <button class="quick-btn" onclick="focusYT()" title="Pega una URL de YouTube">▶ YouTube</button>
     </div>
-
     <div id="sourceStatus" class="source-status status-connecting">
         <span class="indicator"></span>
         <span id="sourceStatusText">Cargando estado...</span>
@@ -380,7 +371,7 @@ DASHBOARD_HTML = """
         </span>
     </div>
 </div>
-<p class="hint">▸ Haz click sobre una cara para activar / quitar la censura</p>
+<p class="hint">▸ Haz click sobre una cara para activar / quitar la censura · Los cambios se reflejan en /public</p>
 
 <script>
     const stream = document.getElementById("stream");
@@ -407,14 +398,10 @@ DASHBOARD_HTML = """
             const x = c.x  * sx, y = c.y  * sy;
             const w = (c.x2 - c.x) * sx, h = (c.y2 - c.y) * sy;
             const color = c.visible ? "#00ff88" : "#ff3a3a";
-
-            // Elipse de contorno alineada al bounding box
             ctx.strokeStyle = color; ctx.lineWidth = 1.5;
             ctx.beginPath();
             ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
             ctx.stroke();
-
-            // Esquinas del bounding box
             const cs = 10; ctx.lineWidth = 2.5;
             ctx.beginPath();
             ctx.moveTo(x,     y+cs);   ctx.lineTo(x,   y);   ctx.lineTo(x+cs, y);
@@ -422,7 +409,6 @@ DASHBOARD_HTML = """
             ctx.moveTo(x,     y+h-cs); ctx.lineTo(x,   y+h); ctx.lineTo(x+cs, y+h);
             ctx.moveTo(x+w-cs,y+h);    ctx.lineTo(x+w, y+h); ctx.lineTo(x+w,  y+h-cs);
             ctx.stroke();
-
             ctx.font = "10px 'Share Tech Mono', monospace";
             ctx.fillStyle = color;
             ctx.fillText(c.visible ? `FACE_${String(i).padStart(2,"0")}` : "CENSORED", x+4, y-5);
@@ -445,7 +431,6 @@ DASHBOARD_HTML = """
     }
     setInterval(poll, 250);
 
-    // ── Source status ────────────────────────────────────────────────────────
     const statusEl     = document.getElementById("sourceStatus");
     const statusTextEl = document.getElementById("sourceStatusText");
     const sourceBtn    = document.getElementById("sourceBtn");
@@ -482,7 +467,6 @@ DASHBOARD_HTML = """
     setInterval(pollStatus, 800);
     pollStatus();
 
-    // ── Accesos rápidos ──────────────────────────────────────────────────────
     function fillSource(val) {
         sourceInput.value = val;
         sourceInput.focus();
@@ -495,27 +479,22 @@ DASHBOARD_HTML = """
         sourceInput.focus();
     }
 
-    // ── Cambio de fuente ─────────────────────────────────────────────────────
     async function setSource() {
         const raw = sourceInput.value.trim();
         if (!raw) { sourceInput.focus(); return; }
-
         const isCamera  = /^\d+$/.test(raw);
         const isUrl     = /^(http|https|rtsp|rtmp):\/\/.+/.test(raw);
         const isYouTube = raw.includes("youtube.com/watch") || raw.includes("youtu.be/");
-
         if (!isCamera && !isUrl && !isYouTube) {
             statusEl.className = "source-status status-error";
             statusTextEl.textContent = "Formato inválido. Usa un número, URL de stream o URL de YouTube.";
             return;
         }
-
         sourceBtn.disabled = true;
         statusEl.className = "source-status status-connecting";
         statusTextEl.textContent = isYouTube
             ? `Resolviendo stream de YouTube... (puede tardar ~15 s)`
             : `Solicitando cambio a: ${raw}...`;
-
         try {
             const res  = await fetch("/set_source", {
                 method: "POST",
@@ -555,7 +534,7 @@ DASHBOARD_HTML = """
 """
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  HTML — VISTA PÚBLICA
+#  HTML — VISTA PÚBLICA (refleja el estado de censura del dashboard)
 # ──────────────────────────────────────────────────────────────────────────────
 PUBLIC_HTML = """
 <!DOCTYPE html>
@@ -586,9 +565,9 @@ PUBLIC_HTML = """
 <body>
     <div class="live"><span class="dot"></span>LIVE &mdash; READ ONLY</div>
     <div class="frame">
-        <img src="/video_public" alt="Live Stream — Faces Censored" draggable="false">
+        <img src="/video_public" alt="Live Stream" draggable="false">
     </div>
-    <footer>All faces are permanently censored &middot; No interaction allowed</footer>
+    <footer>Censura controlada desde el dashboard local &middot; Solo lectura</footer>
 </body>
 </html>
 """
@@ -597,7 +576,7 @@ PUBLIC_HTML = """
 #  HILO DE CAPTURA Y PROCESAMIENTO
 # ──────────────────────────────────────────────────────────────────────────────
 def capturar_y_procesar() -> None:
-    global frame_local_jpeg, frame_publico_jpeg, coordenadas_caras, caras_visibles, frame_id
+    global frame_local_jpeg, coordenadas_caras, caras_visibles, frame_id
 
     proceso  = psutil.Process(os.getpid())
     contador = 0
@@ -605,10 +584,12 @@ def capturar_y_procesar() -> None:
     while True:
         src, _ = _get_source()
 
-        # ── Resolver fuente ──────────────────────────────────────────────────
-        src_real = src
+        src_real   = src
+        es_youtube = False
+
         if isinstance(src, str):
             if _is_youtube_url(src):
+                es_youtube = True
                 print(f"[Stream] Resolviendo YouTube: {src}")
                 with _source_lock:
                     _source_status = "connecting"
@@ -624,8 +605,6 @@ def capturar_y_procesar() -> None:
             elif src.strip().isdigit():
                 src_real = int(src.strip())
 
-        cap = cv2.VideoCapture(src_real)
-        es_youtube = isinstance(src, str) and _is_youtube_url(src)
         cap = cv2.VideoCapture(src_real)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -649,7 +628,7 @@ def capturar_y_procesar() -> None:
 
             if es_youtube:
                 for _ in range(2):
-                    cap.grab()  # descarta frames acumulados sin decodificar
+                    cap.grab()
 
             ret, frame = cap.read()
             if not ret:
@@ -661,7 +640,6 @@ def capturar_y_procesar() -> None:
 
             h_f, w_f = frame.shape[:2]
 
-            # ── Detección DNN ────────────────────────────────────────────────
             try:
                 blob = cv2.dnn.blobFromImage(
                     cv2.resize(frame, (300, 300)),
@@ -693,33 +671,28 @@ def capturar_y_procesar() -> None:
             with lock:
                 visibles = frozenset(caras_visibles)
 
-            # ── Frame público: TODAS las caras censuradas (elipse) ───────────
-            f_pub = frame.copy()
-            for (x, y, x2, y2) in nuevas_coords:
-                _pixelar_elipse(f_pub, x, y, x2, y2)
-            cv2.putText(f_pub, f"FACES: {len(nuevas_coords)} | CENSORED",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 136), 2)
-
-            # ── Frame local: censura selectiva (elipse) ──────────────────────
-            f_loc = frame.copy()
+            # ── Un solo frame con censura selectiva según caras_visibles ─────
+            # Tanto /video (local) como /video_public (público) usan este mismo
+            # frame — la diferencia de lo que ve cada uno está en quién controla
+            # caras_visibles (solo el dashboard local puede hacer click).
+            f_out = frame.copy()
             for i, (x, y, x2, y2) in enumerate(nuevas_coords):
                 if i not in visibles:
-                    _pixelar_elipse(f_loc, x, y, x2, y2)
-            cv2.putText(f_loc, f"Caras: {len(nuevas_coords)}",
+                    _pixelar_elipse(f_out, x, y, x2, y2)
+
+            cv2.putText(f_out, f"Caras: {len(nuevas_coords)}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 136), 2)
 
-            ok_pub, buf_pub = cv2.imencode(".jpg", f_pub, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            ok_loc, buf_loc = cv2.imencode(".jpg", f_loc, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if not ok_pub or not ok_loc:
+            ok_out, buf_out = cv2.imencode(".jpg", f_out, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok_out:
                 print("[Stream] Error al codificar frame JPEG, frame descartado")
                 continue
 
             with lock:
-                coordenadas_caras  = list(zip(nuevas_coords, nuevas_confs))
+                coordenadas_caras = list(zip(nuevas_coords, nuevas_confs))
                 caras_visibles.intersection_update(range(len(nuevas_coords)))
-                frame_local_jpeg   = buf_loc.tobytes()
-                frame_publico_jpeg = buf_pub.tobytes()
-                frame_id          += 1
+                frame_local_jpeg  = buf_out.tobytes()
+                frame_id         += 1
 
             contador += 1
             if contador % 60 == 0:
@@ -762,17 +735,11 @@ def dashboard():
 def public_view():
     return render_template_string(PUBLIC_HTML)
 
+# /video y /video_public usan el mismo frame — la censura es la misma para ambos
 @app.route("/video")
 def video():
     return _stream_headers(Response(
         _mjpeg_generator(lambda: frame_local_jpeg),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-    ))
-
-@app.route("/video_public")
-def video_public():
-    return _stream_headers(Response(
-        _mjpeg_generator(lambda: frame_publico_jpeg),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     ))
 
