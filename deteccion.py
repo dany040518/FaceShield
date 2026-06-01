@@ -743,6 +743,13 @@ def video():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     ))
 
+@app.route("/video_public")
+def video_public():
+    return _stream_headers(Response(
+        _mjpeg_generator(lambda: frame_local_jpeg),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    ))
+
 @app.route("/caras")
 def caras():
     with lock:
