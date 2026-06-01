@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
 Face Detection Stream — Modo dual
-  /         → Dashboard local interactivo (click para censurar/revelar, cambio de fuente)
-  /video    → MJPEG local, censura selectiva
-  /public   → Vista pública, solo lectura
+  /             → Dashboard local interactivo (click para censurar/revelar, cambio de fuente)
+  /video        → MJPEG local, censura selectiva
+  /public       → Vista pública, solo lectura
   /video_public → MJPEG siempre censurado, sin interacción posible
+
+Fuentes soportadas:
+  0, 1, 2...    → Cámaras conectadas al dispositivo (0 = integrada, 1 = USB externa, etc.)
+  http://...    → Stream MJPEG en red local
+  rtsp://...    → Stream RTSP (cámaras IP)
+  https://www.youtube.com/watch?v=... → Video de YouTube (requiere yt-dlp)
 """
 
 import cv2
@@ -19,13 +25,15 @@ import sys
 import urllib.request
 import urllib.error
 import subprocess
+import logging
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 from collections import defaultdict
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  OPTIMIZACIONES OpenCV (aprovecha los 4 cores del RPi 5)
 # ──────────────────────────────────────────────────────────────────────────────
 cv2.setUseOptimized(True)
-cv2.setNumThreads(2)   # deja 2 cores libres para Flask/streaming
+cv2.setNumThreads(2)
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  MODELO DNN — descarga automática si no existe
@@ -40,7 +48,7 @@ def _descargar_modelo(url: str, destino: str) -> None:
     except urllib.error.HTTPError as e:
         print(f"[ERROR] No se pudo descargar {destino}: HTTP {e.code} — {url}")
         if os.path.exists(destino):
-            os.remove(destino)  # eliminar archivo parcialmente descargado
+            os.remove(destino)
         sys.exit(1)
     except urllib.error.URLError as e:
         print(f"[ERROR] Sin conexión de red al descargar {destino}: {e.reason}")
@@ -77,38 +85,32 @@ print("✅ Modelo DNN cargado")
 # ──────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-# Lock único protege todo el estado mutable compartido entre hilos
 lock = threading.Lock()
 
-# Frames pre-codificados (bytes JPEG listos para enviar)
 frame_local_jpeg:   bytes | None = None
 frame_publico_jpeg: bytes | None = None
 frame_id: int = 0
 
-# Estado de detecciones y censura
 coordenadas_caras: list[tuple[tuple[int,int,int,int], float]] = []
 caras_visibles:    set[int] = set()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  FUENTE DE VIDEO — mutable desde la ruta /set_source
-#  "pending" indica que el hilo de captura debe reconectarse con la nueva fuente.
+#  FUENTE DE VIDEO
 # ──────────────────────────────────────────────────────────────────────────────
-DEFAULT_SOURCE = os.environ.get("DEFAULT_VIDEO_SOURCE", "http://10.151.198.60:5000/video")
+DEFAULT_SOURCE = os.environ.get("DEFAULT_VIDEO_SOURCE", "0")
 
 _source_lock    = threading.Lock()
-_current_source: str | int = DEFAULT_SOURCE   # str = URL, int = índice de cámara
-_pending_source: str | int | None = None       # None = sin cambio pendiente
-_source_status:  str = "connecting"            # "connecting" | "ok" | "error"
+_current_source: str | int = DEFAULT_SOURCE
+_pending_source: str | int | None = None
+_source_status:  str = "connecting"
 
 def _get_source() -> tuple[str | int, bool]:
-    """Retorna (fuente_actual, hay_cambio_pendiente)."""
     with _source_lock:
         if _pending_source is not None:
             return _pending_source, True
         return _current_source, False
 
 def _confirm_source(src: str | int, ok: bool) -> None:
-    """El hilo de captura llama esto cuando termina de conectarse."""
     global _current_source, _pending_source, _source_status
     with _source_lock:
         _current_source = src
@@ -116,12 +118,36 @@ def _confirm_source(src: str | int, ok: bool) -> None:
         _source_status  = "ok" if ok else "error"
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  RATE LIMITING para /click  (protección básica por IP)
+#  YOUTUBE — resuelve URL real del stream con yt-dlp
+# ──────────────────────────────────────────────────────────────────────────────
+def _is_youtube_url(src: str) -> bool:
+    return "youtube.com/watch" in src or "youtu.be/" in src
+
+def _resolver_youtube(url: str) -> str | None:
+    """Retorna la URL directa del stream o None si falla."""
+    try:
+        result = subprocess.check_output(
+            ["yt-dlp", "-f", "best[ext=mp4]/best", "-g", url],
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        return result.decode("utf-8").strip()
+    except FileNotFoundError:
+        print("[yt-dlp] No encontrado. Instálalo con: pip install yt-dlp")
+        return None
+    except subprocess.TimeoutExpired:
+        print("[yt-dlp] Timeout al resolver la URL de YouTube.")
+        return None
+    except Exception as e:
+        print(f"[yt-dlp] Error resolviendo '{url}': {e}")
+        return None
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  RATE LIMITING para /click
 # ──────────────────────────────────────────────────────────────────────────────
 _rl_store: dict[str, list[float]] = defaultdict(list)
 _rl_lock  = threading.Lock()
 CLICK_MAX_PER_SECOND = 8
-
 
 def _permitir_click(ip: str) -> bool:
     now = time.time()
@@ -133,9 +159,48 @@ def _permitir_click(ip: str) -> bool:
         _rl_store[ip].append(now)
         return True
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  CENSURA — elipse ajustada a la forma del rostro
+# ──────────────────────────────────────────────────────────────────────────────
+def _pixelar_elipse(img: np.ndarray, x: int, y: int, x2: int, y2: int,
+                    expand: float = 0.25) -> None:
+    h_img, w_img = img.shape[:2]
+    w = x2 - x
+    h = y2 - y
+
+    # Expandir bounding box un 25% en cada lado
+    pad_x = int(w * expand)
+    pad_y = int(h * expand)
+    x  = max(0, x  - pad_x)
+    y  = max(0, y  - pad_y)
+    x2 = min(w_img, x2 + pad_x)
+    y2 = min(h_img, y2 + pad_y)
+    w  = x2 - x
+    h  = y2 - y
+
+    if w <= 0 or h <= 0:
+        return
+
+    region   = img[y:y2, x:x2].copy()
+    if region.size == 0:
+        return
+
+    small    = cv2.resize(region, (6, 6), interpolation=cv2.INTER_LINEAR)
+    pixelada = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    mascara  = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(mascara, (w // 2, h // 2), (w // 2, h // 2), 0, 0, 360, 255, -1)
+    mascara  = cv2.GaussianBlur(mascara, (15, 15), 0)
+
+    alpha    = mascara.astype(np.float32) / 255.0
+    alpha3   = np.stack([alpha, alpha, alpha], axis=-1)
+
+    blended  = (pixelada.astype(np.float32) * alpha3 +
+                img[y:y2, x:x2].astype(np.float32) * (1.0 - alpha3)).astype(np.uint8)
+    img[y:y2, x:x2] = blended
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  HTML — DASHBOARD LOCAL (interactivo)
+#  HTML — DASHBOARD LOCAL
 # ──────────────────────────────────────────────────────────────────────────────
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -147,23 +212,22 @@ DASHBOARD_HTML = """
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --green:  #00ff88; --red: #ff3a3a;
-            --amber:  #ffb800; --blue: #38bdf8;
-            --bg:     #080c10; --panel: #0d1117;
-            --border: #1a2332; --text: #c9d6e3; --dim: #4a5568;
+            --green:#00ff88; --red:#ff3a3a; --amber:#ffb800;
+            --bg:#080c10; --panel:#0d1117; --border:#1a2332;
+            --text:#c9d6e3; --dim:#4a5568;
         }
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
-            background: var(--bg); color: var(--text);
-            font-family: 'Exo 2', sans-serif; min-height: 100vh;
-            display: flex; flex-direction: column; align-items: center;
-            padding: 24px 16px; gap: 20px;
+            background:var(--bg); color:var(--text);
+            font-family:'Exo 2',sans-serif; min-height:100vh;
+            display:flex; flex-direction:column; align-items:center;
+            padding:24px 16px; gap:20px;
         }
         body::before {
-            content: ''; position: fixed; inset: 0;
-            background: repeating-linear-gradient(0deg,transparent,transparent 2px,
+            content:''; position:fixed; inset:0;
+            background:repeating-linear-gradient(0deg,transparent,transparent 2px,
                 rgba(0,255,136,0.015) 2px,rgba(0,255,136,0.015) 4px);
-            pointer-events: none; z-index: 999;
+            pointer-events:none; z-index:999;
         }
         header { display:flex; align-items:center; gap:14px; width:100%; max-width:700px; }
         .logo {
@@ -171,8 +235,8 @@ DASHBOARD_HTML = """
             border-radius:6px; display:grid; place-items:center; font-size:1.2rem;
             box-shadow:0 0 12px rgba(0,255,136,0.3);
         }
-        h1 { font-family:'Share Tech Mono',monospace; font-size:1rem; letter-spacing:3px;
-             color:var(--green); text-transform:uppercase; }
+        h1 { font-family:'Share Tech Mono',monospace; font-size:1rem;
+             letter-spacing:3px; color:var(--green); text-transform:uppercase; }
         .badge {
             margin-left:auto; font-family:'Share Tech Mono',monospace; font-size:0.7rem;
             padding:4px 10px; border:1px solid var(--green); border-radius:20px;
@@ -182,21 +246,16 @@ DASHBOARD_HTML = """
                animation:blink 1.4s infinite; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.1} }
 
-        /* ── Source panel ─────────────────────────────────────────────────── */
         .source-panel {
-            width:100%; max-width:700px;
-            background:var(--panel); border:1px solid var(--border);
-            border-radius:8px; padding:14px 16px;
+            width:100%; max-width:700px; background:var(--panel);
+            border:1px solid var(--border); border-radius:8px; padding:14px 16px;
             display:flex; flex-direction:column; gap:10px;
-        }
-        .source-row {
-            display:flex; gap:8px; align-items:center;
         }
         .source-label {
             font-family:'Share Tech Mono',monospace; font-size:0.65rem;
             color:var(--dim); letter-spacing:2px; text-transform:uppercase;
-            margin-bottom:2px;
         }
+        .source-row { display:flex; gap:8px; align-items:center; }
         .source-input {
             flex:1; background:#060a0f; border:1px solid var(--border);
             border-radius:6px; padding:8px 12px;
@@ -206,12 +265,10 @@ DASHBOARD_HTML = """
         .source-input:focus { border-color:var(--green); }
         .source-input::placeholder { color:var(--dim); }
         .source-btn {
-            background:transparent; border:1px solid var(--green);
-            border-radius:6px; padding:8px 18px;
-            font-family:'Share Tech Mono',monospace; font-size:0.78rem;
+            background:transparent; border:1px solid var(--green); border-radius:6px;
+            padding:8px 18px; font-family:'Share Tech Mono',monospace; font-size:0.78rem;
             color:var(--green); cursor:pointer; letter-spacing:1px;
-            transition:background 0.15s, color 0.15s;
-            white-space:nowrap;
+            transition:background 0.15s,color 0.15s; white-space:nowrap;
         }
         .source-btn:hover  { background:var(--green); color:#080c10; }
         .source-btn:active { opacity:0.7; }
@@ -220,24 +277,28 @@ DASHBOARD_HTML = """
             font-family:'Share Tech Mono',monospace; font-size:0.7rem;
             display:flex; align-items:center; gap:7px; min-height:18px;
         }
-        .source-status .indicator {
-            width:7px; height:7px; border-radius:50%; flex-shrink:0;
-        }
-        .status-ok         { color:var(--green); }
-        .status-ok .indicator         { background:var(--green); }
+        .source-status .indicator { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+        .status-ok { color:var(--green); }
+        .status-ok .indicator { background:var(--green); }
         .status-connecting { color:var(--amber); }
         .status-connecting .indicator { background:var(--amber); animation:blink 0.8s infinite; }
-        .status-error      { color:var(--red); }
-        .status-error .indicator      { background:var(--red); }
-        .source-hint {
-            font-size:0.68rem; color:var(--dim); letter-spacing:0.5px;
-        }
+        .status-error { color:var(--red); }
+        .status-error .indicator { background:var(--red); }
+        .source-hint { font-size:0.68rem; color:var(--dim); letter-spacing:0.5px; }
         .source-hint code {
             font-family:'Share Tech Mono',monospace; color:#5a7a8a;
             background:#0a0f14; padding:1px 5px; border-radius:3px;
         }
 
-        /* ── Video + overlay ──────────────────────────────────────────────── */
+        /* Accesos rápidos de fuente */
+        .quick-sources { display:flex; gap:8px; flex-wrap:wrap; }
+        .quick-btn {
+            background:#0a0f14; border:1px solid var(--border); border-radius:5px;
+            padding:5px 12px; font-family:'Share Tech Mono',monospace; font-size:0.68rem;
+            color:var(--dim); cursor:pointer; transition:border-color 0.15s,color 0.15s;
+        }
+        .quick-btn:hover { border-color:var(--green); color:var(--green); }
+
         .video-wrap {
             position:relative; border:1px solid var(--border); border-radius:8px;
             overflow:hidden; box-shadow:0 0 0 1px rgba(0,255,136,0.08),0 0 40px rgba(0,0,0,0.8);
@@ -250,18 +311,16 @@ DASHBOARD_HTML = """
         .video-wrap::before { top:8px; left:8px; border-width:2px 0 0 2px; }
         .video-wrap::after  { bottom:8px; right:8px; border-width:0 2px 2px 0; }
         #stream  { display:block; width:100%; height:auto; }
-        #overlay { position:absolute; top:0; left:0; width:100%; height:100%;
-                   pointer-events:none; }
+        #overlay { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
         .stats { display:flex; gap:12px; width:100%; max-width:700px; }
         .stat-card {
             flex:1; background:var(--panel); border:1px solid var(--border);
-            border-radius:8px; padding:12px 16px; display:flex;
-            flex-direction:column; gap:4px;
+            border-radius:8px; padding:12px 16px; display:flex; flex-direction:column; gap:4px;
         }
         .stat-label { font-family:'Share Tech Mono',monospace; font-size:0.65rem;
                       color:var(--dim); letter-spacing:2px; text-transform:uppercase; }
-        .stat-value { font-family:'Share Tech Mono',monospace; font-size:1.4rem;
-                      color:var(--green); }
+        .stat-value { font-family:'Share Tech Mono',monospace; font-size:1.4rem; color:var(--green); }
         .hint { font-size:0.75rem; color:var(--dim); letter-spacing:1px; }
     </style>
 </head>
@@ -272,31 +331,33 @@ DASHBOARD_HTML = """
     <div class="badge"><span class="dot"></span>LIVE</div>
 </header>
 
-<!-- ── Source switcher ────────────────────────────────────────────────────── -->
 <div class="source-panel">
     <span class="source-label">▸ Fuente de video</span>
     <div class="source-row">
-        <input
-            id="sourceInput"
-            class="source-input"
-            type="text"
-            placeholder="http://192.168.1.x:5000/video  ó  0"
-            spellcheck="false"
-            autocomplete="off"
-        >
+        <input id="sourceInput" class="source-input" type="text"
+            placeholder="0  ·  1  ·  http://ip:puerto/video  ·  youtube.com/watch?v=..."
+            spellcheck="false" autocomplete="off">
         <button id="sourceBtn" class="source-btn" onclick="setSource()">CONECTAR</button>
     </div>
+
+    <!-- Accesos rápidos -->
+    <div class="quick-sources">
+        <button class="quick-btn" onclick="fillSource('0')">📷 Cámara 0</button>
+        <button class="quick-btn" onclick="fillSource('1')">📷 Cámara 1</button>
+        <button class="quick-btn" onclick="fillSource('2')">📷 Cámara 2</button>
+        <button class="quick-btn" onclick="focusYT()" title="Pega una URL de YouTube">▶ YouTube</button>
+    </div>
+
     <div id="sourceStatus" class="source-status status-connecting">
         <span class="indicator"></span>
         <span id="sourceStatusText">Cargando estado...</span>
     </div>
     <p class="source-hint">
-        Escribe una URL de stream (ej. <code>http://10.0.0.5:5000/video</code>)
-        o <code>0</code> para usar la cámara del dispositivo.
+        Usa <code>0</code> cámara integrada · <code>1</code> cámara USB externa ·
+        URL de stream en red · URL de YouTube (requiere yt-dlp instalado)
     </p>
 </div>
 
-<!-- ── Video stream ───────────────────────────────────────────────────────── -->
 <div class="video-wrap" id="wrapper">
     <img id="stream" src="/video" alt="stream">
     <canvas id="overlay"></canvas>
@@ -346,15 +407,22 @@ DASHBOARD_HTML = """
             const x = c.x  * sx, y = c.y  * sy;
             const w = (c.x2 - c.x) * sx, h = (c.y2 - c.y) * sy;
             const color = c.visible ? "#00ff88" : "#ff3a3a";
+
+            // Elipse de contorno alineada al bounding box
             ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-            ctx.strokeRect(x, y, w, h);
-            const cs = 10; ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.moveTo(x, y+cs);     ctx.lineTo(x, y);       ctx.lineTo(x+cs, y);
-            ctx.moveTo(x+w-cs, y);   ctx.lineTo(x+w, y);     ctx.lineTo(x+w, y+cs);
-            ctx.moveTo(x, y+h-cs);   ctx.lineTo(x, y+h);     ctx.lineTo(x+cs, y+h);
-            ctx.moveTo(x+w-cs, y+h); ctx.lineTo(x+w, y+h);   ctx.lineTo(x+w, y+h-cs);
+            ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
             ctx.stroke();
+
+            // Esquinas del bounding box
+            const cs = 10; ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(x,     y+cs);   ctx.lineTo(x,   y);   ctx.lineTo(x+cs, y);
+            ctx.moveTo(x+w-cs,y);      ctx.lineTo(x+w, y);   ctx.lineTo(x+w,  y+cs);
+            ctx.moveTo(x,     y+h-cs); ctx.lineTo(x,   y+h); ctx.lineTo(x+cs, y+h);
+            ctx.moveTo(x+w-cs,y+h);    ctx.lineTo(x+w, y+h); ctx.lineTo(x+w,  y+h-cs);
+            ctx.stroke();
+
             ctx.font = "10px 'Share Tech Mono', monospace";
             ctx.fillStyle = color;
             ctx.fillText(c.visible ? `FACE_${String(i).padStart(2,"0")}` : "CENSORED", x+4, y-5);
@@ -377,7 +445,7 @@ DASHBOARD_HTML = """
     }
     setInterval(poll, 250);
 
-    // ── Source status polling ────────────────────────────────────────────────
+    // ── Source status ────────────────────────────────────────────────────────
     const statusEl     = document.getElementById("sourceStatus");
     const statusTextEl = document.getElementById("sourceStatusText");
     const sourceBtn    = document.getElementById("sourceBtn");
@@ -395,9 +463,11 @@ DASHBOARD_HTML = """
             statusTextEl.textContent = `Error de conexión · ${data.source}`;
             sourceBtn.disabled = false;
         } else {
-            // connecting
             statusEl.classList.add("status-connecting");
-            statusTextEl.textContent = `Conectando con ${data.source}...`;
+            const isYT = data.source.includes("youtube") || data.source.includes("youtu.be");
+            statusTextEl.textContent = isYT
+                ? `Resolviendo stream de YouTube... (puede tardar ~15 s)`
+                : `Conectando con ${data.source}...`;
             sourceBtn.disabled = true;
         }
     }
@@ -412,23 +482,39 @@ DASHBOARD_HTML = """
     setInterval(pollStatus, 800);
     pollStatus();
 
-    // ── Set source ───────────────────────────────────────────────────────────
+    // ── Accesos rápidos ──────────────────────────────────────────────────────
+    function fillSource(val) {
+        sourceInput.value = val;
+        sourceInput.focus();
+        if (val !== '') setSource();
+    }
+
+    function focusYT() {
+        sourceInput.value = '';
+        sourceInput.placeholder = 'https://www.youtube.com/watch?v=...';
+        sourceInput.focus();
+    }
+
+    // ── Cambio de fuente ─────────────────────────────────────────────────────
     async function setSource() {
         const raw = sourceInput.value.trim();
-        if (!raw) return;
+        if (!raw) { sourceInput.focus(); return; }
 
-        // Validación mínima: solo se permiten URLs http/rtsp/rtmp o dígito numérico
-        const isCamera = /^\d+$/.test(raw);
-        const isUrl    = /^(http|rtsp|rtmp):\/\/.+/.test(raw);
-        if (!isCamera && !isUrl) {
+        const isCamera  = /^\d+$/.test(raw);
+        const isUrl     = /^(http|https|rtsp|rtmp):\/\/.+/.test(raw);
+        const isYouTube = raw.includes("youtube.com/watch") || raw.includes("youtu.be/");
+
+        if (!isCamera && !isUrl && !isYouTube) {
             statusEl.className = "source-status status-error";
-            statusTextEl.textContent = "Formato inválido. Usa una URL o un número de cámara.";
+            statusTextEl.textContent = "Formato inválido. Usa un número, URL de stream o URL de YouTube.";
             return;
         }
 
         sourceBtn.disabled = true;
         statusEl.className = "source-status status-connecting";
-        statusTextEl.textContent = `Solicitando cambio a: ${raw}...`;
+        statusTextEl.textContent = isYouTube
+            ? `Resolviendo stream de YouTube... (puede tardar ~15 s)`
+            : `Solicitando cambio a: ${raw}...`;
 
         try {
             const res  = await fetch("/set_source", {
@@ -442,7 +528,6 @@ DASHBOARD_HTML = """
                 statusTextEl.textContent = data.error || "Error desconocido";
                 sourceBtn.disabled = false;
             }
-            // Si ok, el polling de /source_status actualizará la UI automáticamente
         } catch {
             statusEl.className = "source-status status-error";
             statusTextEl.textContent = "No se pudo contactar al servidor.";
@@ -450,7 +535,6 @@ DASHBOARD_HTML = """
         }
     }
 
-    // Permitir Enter en el input
     sourceInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") setSource();
     });
@@ -471,7 +555,7 @@ DASHBOARD_HTML = """
 """
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  HTML — VISTA PÚBLICA (solo lectura, sin JS interactivo)
+#  HTML — VISTA PÚBLICA
 # ──────────────────────────────────────────────────────────────────────────────
 PUBLIC_HTML = """
 <!DOCTYPE html>
@@ -488,20 +572,13 @@ PUBLIC_HTML = """
             display:flex; flex-direction:column; align-items:center;
             justify-content:center; gap:16px; padding:24px;
         }
-        .live {
-            display:flex; align-items:center; gap:8px;
-            font-size:0.75rem; color:#00ff88; letter-spacing:3px;
-        }
-        .dot {
-            width:8px; height:8px; background:#00ff88;
-            border-radius:50%; animation:blink 1.4s infinite;
-        }
+        .live { display:flex; align-items:center; gap:8px;
+                font-size:0.75rem; color:#00ff88; letter-spacing:3px; }
+        .dot { width:8px; height:8px; background:#00ff88;
+               border-radius:50%; animation:blink 1.4s infinite; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.1} }
-        .frame {
-            width:100%; max-width:700px;
-            border:1px solid #1a2332; border-radius:8px;
-            overflow:hidden; box-shadow:0 0 40px rgba(0,0,0,0.8);
-        }
+        .frame { width:100%; max-width:700px; border:1px solid #1a2332;
+                 border-radius:8px; overflow:hidden; box-shadow:0 0 40px rgba(0,0,0,0.8); }
         img { display:block; width:100%; height:auto; user-select:none; }
         footer { font-size:0.65rem; color:#4a5568; letter-spacing:2px; text-align:center; }
     </style>
@@ -517,20 +594,7 @@ PUBLIC_HTML = """
 """
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  UTILIDAD: pixelar una región del frame en su lugar (in-place)
-# ──────────────────────────────────────────────────────────────────────────────
-def _pixelar(img: np.ndarray, x: int, y: int, x2: int, y2: int) -> None:
-    region = img[y:y2, x:x2]
-    if region.size == 0:
-        return
-    small = cv2.resize(region, (6, 6), interpolation=cv2.INTER_LINEAR)
-    img[y:y2, x:x2] = cv2.resize(small, (x2 - x, y2 - y), interpolation=cv2.INTER_NEAREST)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 #  HILO DE CAPTURA Y PROCESAMIENTO
-#
-#  Detecta cambios en _pending_source y reconecta automáticamente.
 # ──────────────────────────────────────────────────────────────────────────────
 def capturar_y_procesar() -> None:
     global frame_local_jpeg, frame_publico_jpeg, coordenadas_caras, caras_visibles, frame_id
@@ -538,17 +602,34 @@ def capturar_y_procesar() -> None:
     proceso  = psutil.Process(os.getpid())
     contador = 0
 
-    while True:   # loop externo: reconexión automática
+    while True:
         src, _ = _get_source()
 
-        # Convertir a int si es un índice de cámara ("0", "1", …)
-        if isinstance(src, str) and src.strip().isdigit():
-            src = int(src.strip())
+        # ── Resolver fuente ──────────────────────────────────────────────────
+        src_real = src
+        if isinstance(src, str):
+            if _is_youtube_url(src):
+                print(f"[Stream] Resolviendo YouTube: {src}")
+                with _source_lock:
+                    _source_status = "connecting"
+                resolved = _resolver_youtube(src)
+                if resolved:
+                    print(f"[Stream] URL resuelta: {resolved[:80]}...")
+                    src_real = resolved
+                else:
+                    print("[Stream] No se pudo resolver el stream de YouTube.")
+                    _confirm_source(src, ok=False)
+                    time.sleep(10)
+                    continue
+            elif src.strip().isdigit():
+                src_real = int(src.strip())
 
-        cap = cv2.VideoCapture(src)
+        cap = cv2.VideoCapture(src_real)
+        es_youtube = isinstance(src, str) and _is_youtube_url(src)
+        cap = cv2.VideoCapture(src_real)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 3 if es_youtube else 1)
 
         if not cap.isOpened():
             print(f"[Stream] No se pudo abrir '{src}'. Reintentando en 10 s...")
@@ -559,13 +640,16 @@ def capturar_y_procesar() -> None:
         print(f"[Stream] Conectado a '{src}'. Procesando frames...")
         _confirm_source(src, ok=True)
 
-        while True:   # loop interno: frames
-            # ── Detectar cambio de fuente solicitado desde la UI ───────────
+        while True:
             _, hay_cambio = _get_source()
             if hay_cambio:
                 print("[Stream] Nueva fuente solicitada. Reconectando...")
                 cap.release()
-                break   # vuelve al loop externo para abrir la nueva fuente
+                break
+
+            if es_youtube:
+                for _ in range(2):
+                    cap.grab()  # descarta frames acumulados sin decodificar
 
             ret, frame = cap.read()
             if not ret:
@@ -577,7 +661,7 @@ def capturar_y_procesar() -> None:
 
             h_f, w_f = frame.shape[:2]
 
-            # ── Detección DNN ─────────────────────────────────────────────
+            # ── Detección DNN ────────────────────────────────────────────────
             try:
                 blob = cv2.dnn.blobFromImage(
                     cv2.resize(frame, (300, 300)),
@@ -591,8 +675,8 @@ def capturar_y_procesar() -> None:
                 print(f"[Stream] Error en inferencia DNN, frame descartado: {e}")
                 continue
 
-            nuevas_coords: list[tuple[int, int, int, int]] = []
-            nuevas_confs:  list[float]                      = []
+            nuevas_coords: list[tuple[int,int,int,int]] = []
+            nuevas_confs:  list[float] = []
 
             for i in range(detections.shape[2]):
                 conf = float(detections[0, 0, i, 2])
@@ -609,45 +693,38 @@ def capturar_y_procesar() -> None:
             with lock:
                 visibles = frozenset(caras_visibles)
 
-            # ── Frame público: TODAS las caras censuradas ──────────────────
+            # ── Frame público: TODAS las caras censuradas (elipse) ───────────
             f_pub = frame.copy()
             for (x, y, x2, y2) in nuevas_coords:
-                _pixelar(f_pub, x, y, x2, y2)
-            cv2.putText(
-                f_pub, f"FACES: {len(nuevas_coords)} | CENSORED",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 136), 2,
-            )
+                _pixelar_elipse(f_pub, x, y, x2, y2)
+            cv2.putText(f_pub, f"FACES: {len(nuevas_coords)} | CENSORED",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 136), 2)
 
-            # ── Frame local: censura selectiva ─────────────────────────────
+            # ── Frame local: censura selectiva (elipse) ──────────────────────
             f_loc = frame.copy()
             for i, (x, y, x2, y2) in enumerate(nuevas_coords):
                 if i not in visibles:
-                    _pixelar(f_loc, x, y, x2, y2)
-            cv2.putText(
-                f_loc, f"Caras: {len(nuevas_coords)}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 136), 2,
-            )
+                    _pixelar_elipse(f_loc, x, y, x2, y2)
+            cv2.putText(f_loc, f"Caras: {len(nuevas_coords)}",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 136), 2)
 
             ok_pub, buf_pub = cv2.imencode(".jpg", f_pub, [cv2.IMWRITE_JPEG_QUALITY, 75])
             ok_loc, buf_loc = cv2.imencode(".jpg", f_loc, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok_pub or not ok_loc:
                 print("[Stream] Error al codificar frame JPEG, frame descartado")
                 continue
-            jpg_pub = buf_pub.tobytes()
-            jpg_loc = buf_loc.tobytes()
 
             with lock:
                 coordenadas_caras  = list(zip(nuevas_coords, nuevas_confs))
                 caras_visibles.intersection_update(range(len(nuevas_coords)))
-                frame_local_jpeg   = jpg_loc
-                frame_publico_jpeg = jpg_pub
+                frame_local_jpeg   = buf_loc.tobytes()
+                frame_publico_jpeg = buf_pub.tobytes()
                 frame_id          += 1
 
             contador += 1
             if contador % 60 == 0:
                 ram = proceso.memory_info().rss / 1024 / 1024
                 print(f"[Stream] RAM: {ram:.1f} MB | Caras: {len(nuevas_coords)} | Frame #{frame_id}")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  GENERADORES MJPEG
@@ -669,44 +746,35 @@ def _mjpeg_generator(get_jpeg_fn):
         else:
             time.sleep(0.010)
 
-
 def _stream_headers(response: Response) -> Response:
-    response.headers["Cache-Control"]    = "no-cache, no-store, must-revalidate"
+    response.headers["Cache-Control"]     = "no-cache, no-store, must-revalidate"
     response.headers["X-Accel-Buffering"] = "no"
     return response
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  RUTAS FLASK
 # ──────────────────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD_HTML)
-
 
 @app.route("/public")
 def public_view():
     return render_template_string(PUBLIC_HTML)
 
-
 @app.route("/video")
 def video():
-    resp = Response(
+    return _stream_headers(Response(
         _mjpeg_generator(lambda: frame_local_jpeg),
         mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
-    return _stream_headers(resp)
-
+    ))
 
 @app.route("/video_public")
 def video_public():
-    resp = Response(
+    return _stream_headers(Response(
         _mjpeg_generator(lambda: frame_publico_jpeg),
         mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
-    return _stream_headers(resp)
-
+    ))
 
 @app.route("/caras")
 def caras():
@@ -720,7 +788,6 @@ def caras():
             for i, ((x, y, x2, y2), conf) in enumerate(coordenadas_caras)
         ]
     return jsonify(datos)
-
 
 @app.route("/click", methods=["POST"])
 def click():
@@ -749,13 +816,8 @@ def click():
 
     return jsonify({"ok": True})
 
-
 @app.route("/set_source", methods=["POST"])
 def set_source():
-    """
-    Cambia la fuente de video del hilo de captura.
-    Acepta JSON: { "source": "http://..." }  o  { "source": "0" }
-    """
     global _pending_source, _source_status
 
     data = request.get_json(silent=True)
@@ -766,10 +828,11 @@ def set_source():
     if not raw:
         return jsonify({"ok": False, "error": "empty_source"}), 400
 
-    # Validación básica en backend
-    is_camera = raw.isdigit()
-    is_url    = raw.startswith(("http://", "https://", "rtsp://", "rtmp://"))
-    if not is_camera and not is_url:
+    is_camera  = raw.isdigit()
+    is_url     = raw.startswith(("http://", "https://", "rtsp://", "rtmp://"))
+    is_youtube = "youtube.com/watch" in raw or "youtu.be/" in raw
+
+    if not is_camera and not is_url and not is_youtube:
         return jsonify({"ok": False, "error": "invalid_source_format"}), 400
 
     with _source_lock:
@@ -779,15 +842,12 @@ def set_source():
     print(f"[API] Cambio de fuente solicitado: '{raw}'")
     return jsonify({"ok": True, "source": raw})
 
-
 @app.route("/source_status")
 def source_status():
-    """Devuelve el estado actual de la fuente de video."""
     with _source_lock:
         src    = _pending_source if _pending_source is not None else _current_source
         status = _source_status
     return jsonify({"source": str(src), "status": status})
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  MAIN
